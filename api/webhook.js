@@ -35,29 +35,54 @@ export default async function handler(req, res) {
   }
 
   try {
-    // 3. Extract the email of the person who just paid
-    const email = req.body.payload.payment.entity.email;
-
-    if (!email) {
-      return res.status(400).json({ status: 'error', message: 'No email found in payload' });
-    }
-
-    // 4. Find that user in your Firestore database
+    const eventType = req.body.event;
     const usersRef = db.collection('users');
-    const snapshot = await usersRef.where('email', '==', email).get();
 
-    if (snapshot.empty) {
-      console.log(`Payment received for ${email}, but user not found in database.`);
-      return res.status(404).json({ status: 'error', message: 'User not found' });
+    // ---------------------------------------------------------
+    // SCENARIO 1: SUCCESSFUL PAYMENT OR RENEWAL
+    // ---------------------------------------------------------
+    if (eventType === 'subscription.charged' || eventType === 'payment.captured') {
+      const email = req.body.payload.payment.entity.email;
+
+      if (!email) {
+        return res.status(400).json({ status: 'error', message: 'No email found in payload' });
+      }
+
+      const snapshot = await usersRef.where('email', '==', email).get();
+
+      if (!snapshot.empty) {
+        const userDoc = snapshot.docs[0];
+        await userDoc.ref.update({ isSubscribed: true });
+        console.log(`✅ Access GRANTED for: ${email}`);
+      } else {
+        console.log(`Payment received for ${email}, but user not found in database.`);
+      }
     }
 
-    // 5. Update their document to unlock the app
-    const userDoc = snapshot.docs[0];
-    await userDoc.ref.update({ isSubscribed: true });
+    // ---------------------------------------------------------
+    // SCENARIO 2: CANCELLATION OR PAYMENT FAILURE
+    // ---------------------------------------------------------
+    else if (eventType === 'subscription.cancelled' || eventType === 'subscription.halted') {
+      // Use optional chaining (?.) to prevent crashes if the payload structure varies slightly
+      const email = req.body.payload.subscription?.entity?.notes?.email;
 
-    console.log(`Successfully unlocked app for: ${email}`);
-    
-    // 6. Tell Razorpay we received the message successfully
+      if (!email) {
+        console.log('No email found in subscription notes payload.');
+        return res.status(400).json({ status: 'error', message: 'No email found in payload' });
+      }
+
+      const snapshot = await usersRef.where('email', '==', email).get();
+
+      if (!snapshot.empty) {
+        const userDoc = snapshot.docs[0];
+        await userDoc.ref.update({ isSubscribed: false });
+        console.log(`❌ Access REVOKED for: ${email}`);
+      } else {
+        console.log(`Cancellation received for ${email}, but user not found in database.`);
+      }
+    }
+
+    // 3. Always tell Razorpay we received the message successfully
     return res.status(200).json({ status: 'ok' });
     
   } catch (error) {
